@@ -2,8 +2,11 @@ import pybullet as p
 import pybullet_data
 import numpy as np
 import gymnasium as gym
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  
+import cv2
+import os
 
+import matplotlib.pyplot as plt
 
 from gymnasium  import spaces
 from stable_baselines3 import PPO
@@ -12,6 +15,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import EvalCallback, BaseCallback
+from tqdm import tqdm  
+
 
 class QuadrupedEnv(gym.Env):
     def __init__(self):
@@ -50,12 +57,21 @@ class QuadrupedEnv(gym.Env):
         self.previous_distance = distance_to_ball
         
     def reset(self, *, seed=None, options=None):
+
+        if seed is not None:
+            np.random.seed(seed)  # Ensure reproducibility
+        
         # Reset the robot and environment
         p.resetBasePositionAndOrientation(self.robot_id, [0, 0, 0.5], [0, 0, 0, 1])
         p.resetBasePositionAndOrientation(self.ball_id, [15, 0, 0.5], [0, 0, 0, 1])
         
         self.step_counter = 0
         obs = self._get_observation()
+        # Reset the previous distance
+        robot_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+        ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
+        self.previous_distance = np.linalg.norm(np.array(robot_pos[:2]) - np.array(ball_pos[:2]))
+
         return obs, {} # Fix return signature
 
     def step(self, action):
@@ -178,8 +194,6 @@ def make_env():
     env = QuadrupedEnv()
     return Monitor(env)
     
-from stable_baselines3.common.callbacks import EvalCallback, BaseCallback
-from tqdm import tqdm
 
 class ProgressAndEvalCallback(EvalCallback):
     def __init__(self, total_timesteps, eval_env, *args, reward_log_path=None, **kwargs):
@@ -241,41 +255,151 @@ class ProgressAndEvalCallback(EvalCallback):
                 for reward in self.episode_rewards:
                     f.write(f"{reward}\n")
     
-    
-    
-    
-    
-env = DummyVecEnv([make_env])
-eval_env = DummyVecEnv([make_env])  # Evaluation environment
 
+
+class RecordFastestRobotCallback(EvalCallback):
+    def __init__(self, render_env, *args, video_path="fastest_robot.mp4", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.render_env = render_env
+        self.fastest_speed = 0
+        self.fastest_episode_frames = []
+        self.video_path = video_path
+
+    def _on_step(self) -> bool:
+        # Evaluate speed and save frames if this is the fastest episode
+        speed = self.locals["infos"][0].get("speed", 0)
+        if speed > self.fastest_speed:
+            self.fastest_speed = speed
+            self.fastest_episode_frames = []
+            self._record_episode()
+
+        return super()._on_step()
+
+    def _record_episode(self):
+        # Render frames for the fastest episode
+        obs = self.render_env.reset()
+        done = False
+        while not done:
+            frame = self.render_env.render(mode="rgb_array")
+            self.fastest_episode_frames.append(frame)
+            action, _ = self.model.predict(obs, deterministic=True)
+            obs, _, done, _ = self.render_env.step(action)
+
+    def _on_training_end(self):
+        # Save the video of the fastest episode
+        if self.fastest_episode_frames:
+            height, width, _ = self.fastest_episode_frames[0].shape
+            out = cv2.VideoWriter(
+                self.video_path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (width, height)
+            )
+            for frame in self.fastest_episode_frames:
+                out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            out.release()
+        print(f"Fastest episode video saved to {self.video_path}")
+
+
+
+class SpeedTrackingCallback(EvalCallback):
+    def __init__(self, *args, log_path="speed_log.txt", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.speeds = []
+        self.log_path = log_path
+        self.previous_position = None
+
+    def _on_step(self) -> bool:
+        # Get robot position from the environment
+        robot_pos, _ = p.getBasePositionAndOrientation(self.eval_env.envs[0].robot_id)
+        current_position = np.array(robot_pos)
+
+        if self.previous_position is None:
+            self.previous_position = current_position
+            return super()._on_step()
+
+        # Calculate speed (assuming time_step of 1/240 seconds, which is PyBullet's default)
+        time_step = 1/240
+        speed = np.linalg.norm(current_position - self.previous_position) / time_step
+        self.speeds.append(speed)
+        self.previous_position = current_position
+
+        # Log speed
+        with open(self.log_path, "a") as log_file:
+            log_file.write(f"{speed}\n")
+
+        return super()._on_step()
+
+    def _on_training_end(self):
+        # Save speed logs to file
+        with open(self.log_path, "w") as f:
+            for speed in self.speeds:
+                f.write(f"{speed}\n")
+        print(f"Speed log saved to {self.log_path}")
+
+        # Plot learning curve
+        self.plot_learning_curve()
+
+    def plot_learning_curve(self):
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.speeds, label="Speed (cm/s)")
+        plt.xlabel("Trials")
+        plt.ylabel("Speed (cm/s)")
+        plt.title("Learning Curve")
+        plt.legend()
+        plt.grid()
+        plt.savefig("learning_curve.png")
+        plt.show()
+
+
+def plot_aggregated_learning_curves(log_files):
+    all_speeds = [np.loadtxt(log_file) for log_file in log_files]
+    mean_speeds = np.mean(all_speeds, axis=0)
+    std_speeds = np.std(all_speeds, axis=0)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(mean_speeds, label="Average Speed (cm/s)")
+    plt.fill_between(range(len(mean_speeds)),
+                     mean_speeds - std_speeds,
+                     mean_speeds + std_speeds,
+                     alpha=0.3, label="Standard Deviation")
+    plt.xlabel("Trials")
+    plt.ylabel("Speed (cm/s)")
+    plt.title("Aggregated Learning Curve")
+    plt.legend()
+    plt.grid()
+    plt.savefig("aggregated_learning_curve.png")
+    plt.show()
+
+log_path = "./logs/speed_logs/"  # Specify a proper directory
+
+# Wrap environments
+env = DummyVecEnv([make_env])
+render_env = DummyVecEnv([make_env])
+
+# Define total timesteps
+total_timesteps = 5000
+
+# Create callbacks
+record_callback = RecordFastestRobotCallback(render_env=render_env, eval_env=env,
+    video_path="./logs/fastest_robot.mp4")
+speed_callback = SpeedTrackingCallback(eval_env=env,
+    log_path="./logs/speed_log.txt")
+    
 ### Define total timesteps
-total_timesteps = 500000
-##
-##    # Create the callback with progress bar and logging
-progress_and_eval_callback = ProgressAndEvalCallback(
-    total_timesteps=total_timesteps,
-    eval_env=eval_env,
-    best_model_save_path='./logs/',
-    log_path='./logs/',
-    eval_freq=3,
-    deterministic=True,
-    render=False,
-    reward_log_path="./logs/reward_log.txt"
-)
+total_timesteps = 100000
+
 # Define and train the model
 #model = PPO("MlpPolicy", env, verbose=1) #Start with this for training.
 model = PPO.load("./logs/best_model", env=env) #Use this for the next iteration of training
-#
-model.learn(total_timesteps=total_timesteps, callback=progress_and_eval_callback)
-#
-#   # Plot the rewards
-plt.plot(progress_and_eval_callback.episode_rewards)
-plt.xlabel("Episode")
-plt.ylabel("Total Reward")
-plt.title("Training Progress")
-plt.show()
-	
 
+model.learn(total_timesteps=total_timesteps, callback=[record_callback, speed_callback])
+
+log_files = ["./logs/speed_log.txt"]  # Use only the file we actually created
+if os.path.exists(log_files[0]):  # Add error handling
+    plot_aggregated_learning_curves(log_files)
+else:
+    print(f"Warning: {log_files[0]} not found. Skipping plot generation.")
+
+
+# Use fllowing to load the best model and test it
 del model
 model = PPO.load("./logs/best_model", env=env)
 
