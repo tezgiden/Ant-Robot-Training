@@ -258,14 +258,28 @@ class ProgressAndEvalCallback(EvalCallback):
 
 
 class RecordFastestRobotCallback(EvalCallback):
-    def __init__(self, render_env, *args, video_path="fastest_robot.mp4", **kwargs):
+    def __init__(self, render_env, total_timesteps, *args, video_path="fastest_robot.mp4", **kwargs):
         super().__init__(*args, **kwargs)
         self.render_env = render_env
         self.fastest_speed = 0
         self.fastest_episode_frames = []
         self.video_path = video_path
+        self.progress_bar = None    
+        self.total_timesteps = total_timesteps
+        self.current_timestep = 0  # Add this l
+
+
+    def _on_training_start(self):
+        # Initialize the progress bar
+        self.progress_bar = tqdm(total=self.total_timesteps, desc="Training Progress")
+
 
     def _on_step(self) -> bool:
+        
+        # Update the progress bar
+        self.current_timestep += 1
+        self.progress_bar.update(1)
+
         # Evaluate speed and save frames if this is the fastest episode
         speed = self.locals["infos"][0].get("speed", 0)
         if speed > self.fastest_speed:
@@ -286,6 +300,10 @@ class RecordFastestRobotCallback(EvalCallback):
             obs, _, done, _ = self.render_env.step(action)
 
     def _on_training_end(self):
+        
+        # Close the progress bar
+        self.progress_bar.close()
+
         # Save the video of the fastest episode
         if self.fastest_episode_frames:
             height, width, _ = self.fastest_episode_frames[0].shape
@@ -375,16 +393,16 @@ env = DummyVecEnv([make_env])
 render_env = DummyVecEnv([make_env])
 
 # Define total timesteps
-total_timesteps = 5000
+total_timesteps = 500000
 
 # Create callbacks
-record_callback = RecordFastestRobotCallback(render_env=render_env, eval_env=env,
+record_callback = RecordFastestRobotCallback(total_timesteps=total_timesteps, render_env=render_env,eval_env=env,
     video_path="./logs/fastest_robot.mp4")
 speed_callback = SpeedTrackingCallback(eval_env=env,
     log_path="./logs/speed_log.txt")
     
 ### Define total timesteps
-total_timesteps = 100000
+#total_timesteps = 100000
 
 # Define and train the model
 #model = PPO("MlpPolicy", env, verbose=1) #Start with this for training.
