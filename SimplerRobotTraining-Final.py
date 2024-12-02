@@ -72,7 +72,7 @@ class QuadrupedEnv(gym.Env):
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         self.previous_distance = np.linalg.norm(np.array(robot_pos[:2]) - np.array(ball_pos[:2]))
 
-        return obs, {} # Fix return signature
+        return obs, {} 
 
     def step(self, action):
         # Apply action to robot's motors (simplified parametric CPG)
@@ -113,9 +113,6 @@ class QuadrupedEnv(gym.Env):
             done = True
             reward += 1000
             print("SUCCESS: Got too close and terminated. distance_to_ball=", distance_to_ball, ", reward=", reward)
-        #end_time = time.time()
-        #step_duration = (end_time - start_time) * 1000  # Convert to milliseconds
-        #print(f"Actual step duration: {step_duration:.2f}ms")
 
         return obs, reward, done, truncated, {}
 
@@ -267,7 +264,7 @@ class RecordFastestRobotCallback(EvalCallback):
         self.video_path = video_path
         self.progress_bar = None    
         self.total_timesteps = total_timesteps
-        self.current_timestep = 0  # Add this l
+        self.current_timestep = 0  
 
 
     def _on_training_start(self):
@@ -402,8 +399,6 @@ record_callback = RecordFastestRobotCallback(total_timesteps=total_timesteps, re
 speed_callback = SpeedTrackingCallback(eval_env=env,
     log_path="./logs/speed_log.txt")
     
-### Define total timesteps
-#total_timesteps = 100000
 
 # Define and train the model
 model = PPO("MlpPolicy", env=env, verbose=1) #Start with this for training.
