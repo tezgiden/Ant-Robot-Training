@@ -86,32 +86,37 @@ class QuadrupedEnv(gym.Env):
         p.stepSimulation()
         self.step_counter += 1
 
-        # Reward function
-        reward = self._compute_reward()
-        
-        done = self.step_counter >= self.max_steps
-        obs = self._get_observation()
-
-        # Truncated is typically used to handle environments that terminate early
-        # In this case, it can be the same as done
-        truncated = False  # You can implement logic to truncate if needed (e.g., timeout or failure)
-		
+        # Get observations and compute reward
         robot_pos, robot_orn = p.getBasePositionAndOrientation(self.robot_id)
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         distance_to_ball = np.linalg.norm(np.array(robot_pos[:2]) - np.array(ball_pos[:2]))
-                # Penalize for flipping
+        
+        # Check orientation earlier to prevent extreme flips
         up_vector = p.getMatrixFromQuaternion(robot_orn)[6:9]
-        if up_vector[2] < 0 :
+        
+        # Get observation and compute reward
+        obs = self._get_observation()
+        reward = self._compute_reward(robot_pos, robot_orn, distance_to_ball, up_vector, ball_pos)
+        
+        # Default flags
+        done = self.step_counter >= self.max_steps
+        truncated = False
+        
+        # Early termination conditions
+        if up_vector[2] < 0.3:  # Terminate earlier, before complete flip
             truncated = True
-            done=True
-            reward -=2000
-            print ("FLIPPED. distance_to_ball=", distance_to_ball, ", revard=", reward)
-        elif distance_to_ball < 1 :
+            done = True
+            reward -= 2000
+            print("FLIPPING PREVENTED. distance_to_ball=", distance_to_ball, ", reward=", reward)
+        elif distance_to_ball < 1:
             truncated = True
-            done=True
-            reward +=1000
-            print ("SUCCESS : Got too close and terminated. distance_to_ball=", distance_to_ball, ", revard=", reward)
-            
+            done = True
+            reward += 1000
+            print("SUCCESS: Got too close and terminated. distance_to_ball=", distance_to_ball, ", reward=", reward)
+        #end_time = time.time()
+        #step_duration = (end_time - start_time) * 1000  # Convert to milliseconds
+        #print(f"Actual step duration: {step_duration:.2f}ms")
+
         return obs, reward, done, truncated, {}
 
     def _get_observation(self):
@@ -122,13 +127,7 @@ class QuadrupedEnv(gym.Env):
         return obs
 
     
-    def _compute_reward(self):
-        robot_pos, robot_orn = p.getBasePositionAndOrientation(self.robot_id)
-        ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
-    
-        # Compute distance to the ball
-        distance_to_ball = np.linalg.norm(np.array(robot_pos[:2]) - np.array(ball_pos[:2]))
-    
+    def _compute_reward(self, robot_pos, robot_orn, distance_to_ball, up_vector, ball_pos):
         # Initialize reward
         reward = 0
         
@@ -138,6 +137,7 @@ class QuadrupedEnv(gym.Env):
             reward -= 500 * (0.7 - up_vector[2])  # Progressive penalty based on tilt
             if up_vector[2] < 0:  # Complete flip
                 reward -= 1000
+                print("FLIPPED. distance_to_ball=", distance_to_ball, ", reward=", reward)
                 
         # Stability rewards
         linear_velocity, angular_velocity = p.getBaseVelocity(self.robot_id)
@@ -173,7 +173,8 @@ class QuadrupedEnv(gym.Env):
             # Distance improvement reward
             distance_improvement = self.previous_distance - distance_to_ball
             reward += distance_improvement * 20
-            
+        else:
+            print("NOT STABLE. distance_to_ball=", distance_to_ball, ", reward=", reward)
         # Update previous distance for next step
         self.previous_distance = distance_to_ball
         
@@ -393,7 +394,7 @@ env = DummyVecEnv([make_env])
 render_env = DummyVecEnv([make_env])
 
 # Define total timesteps
-total_timesteps = 500000
+total_timesteps = 1000000
 
 # Create callbacks
 record_callback = RecordFastestRobotCallback(total_timesteps=total_timesteps, render_env=render_env,eval_env=env,
@@ -405,8 +406,8 @@ speed_callback = SpeedTrackingCallback(eval_env=env,
 #total_timesteps = 100000
 
 # Define and train the model
-#model = PPO("MlpPolicy", env, verbose=1) #Start with this for training.
-model = PPO.load("./logs/best_model", env=env) #Use this for the next iteration of training
+model = PPO("MlpPolicy", env=env, verbose=1) #Start with this for training.
+#model = PPO.load("./logs/best_model", env=env) #Use this for the next iteration of training
 
 model.learn(total_timesteps=total_timesteps, callback=[record_callback, speed_callback])
 
